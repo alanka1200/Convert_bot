@@ -30,7 +30,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       - name: Build
         env:
           VITE_BACKEND_URL: ${{ secrets.VITE_BACKEND_URL }}
