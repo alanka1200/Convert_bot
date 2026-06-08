@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, File, Form, UploadFile, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from utils import detect_file_type, get_possible_formats, get_output_filename, MAX_FILE_SIZE_MB, is_image_ext
@@ -85,6 +86,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="File Converter Bot", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ─────────────────────────────────────────────
