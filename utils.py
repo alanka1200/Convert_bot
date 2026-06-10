@@ -7,12 +7,43 @@ from typing import Optional
 
 # Маппинг расширений → список форматов (id, icon, label)
 FORMAT_MAP: dict[str, list[dict]] = {
+    # ── PDF ───────────────────────────────────────────────────────────────────
     "pdf": [
-        {"id": "docx",     "icon": "📄", "label": "PDF → Word (DOCX)"},
-        {"id": "png",      "icon": "🖼",  "label": "PDF → PNG (постранично)"},
-        {"id": "txt",      "icon": "🔤", "label": "PDF → TXT (извлечь текст)"},
+        {"id": "docx",     "icon": "📝", "label": "PDF → Word (DOCX)"},
+        {"id": "png",      "icon": "🖼",  "label": "PDF → PNG (картинки)"},
+        {"id": "txt",      "icon": "🔤", "label": "PDF → TXT (текст)"},
         {"id": "compress", "icon": "🗜️", "label": "Сжать PDF"},
     ],
+    # ── Word ──────────────────────────────────────────────────────────────────
+    "docx": [
+        {"id": "pdf",      "icon": "📄", "label": "Word → PDF"},
+        {"id": "txt",      "icon": "🔤", "label": "Word → TXT (текст)"},
+    ],
+    "doc": [
+        {"id": "pdf",      "icon": "📄", "label": "Word → PDF"},
+        {"id": "txt",      "icon": "🔤", "label": "Word → TXT (текст)"},
+    ],
+    # ── Excel ─────────────────────────────────────────────────────────────────
+    "xlsx": [
+        {"id": "pdf",      "icon": "📄", "label": "Excel → PDF"},
+        {"id": "csv",      "icon": "📊", "label": "Excel → CSV"},
+        {"id": "txt",      "icon": "🔤", "label": "Excel → TXT"},
+    ],
+    "xls": [
+        {"id": "pdf",      "icon": "📄", "label": "Excel → PDF"},
+        {"id": "csv",      "icon": "📊", "label": "Excel → CSV"},
+        {"id": "txt",      "icon": "🔤", "label": "Excel → TXT"},
+    ],
+    # ── PowerPoint ────────────────────────────────────────────────────────────
+    "pptx": [
+        {"id": "pdf",      "icon": "📄", "label": "PowerPoint → PDF"},
+        {"id": "png",      "icon": "🖼",  "label": "PowerPoint → PNG (слайды)"},
+    ],
+    "ppt": [
+        {"id": "pdf",      "icon": "📄", "label": "PowerPoint → PDF"},
+        {"id": "png",      "icon": "🖼",  "label": "PowerPoint → PNG (слайды)"},
+    ],
+    # ── Изображения ───────────────────────────────────────────────────────────
     "png": [
         {"id": "jpg",      "icon": "🖼",  "label": "PNG → JPG"},
         {"id": "pdf",      "icon": "📄", "label": "PNG → PDF"},
@@ -33,28 +64,40 @@ FORMAT_MAP: dict[str, list[dict]] = {
         {"id": "jpg",      "icon": "🖼",  "label": "BMP → JPG"},
         {"id": "pdf",      "icon": "📄", "label": "BMP → PDF"},
     ],
-    "docx": [
-        {"id": "txt",      "icon": "🔤", "label": "Word → TXT (извлечь текст)"},
-    ],
-    "doc": [
-        {"id": "txt",      "icon": "🔤", "label": "DOC → TXT (извлечь текст)"},
-    ],
+    # ── Текст / данные ────────────────────────────────────────────────────────
     "txt": [
         {"id": "pdf",      "icon": "📄", "label": "TXT → PDF"},
+    ],
+    "csv": [
+        {"id": "pdf",      "icon": "📄", "label": "CSV → PDF"},
+        {"id": "txt",      "icon": "🔤", "label": "CSV → TXT"},
     ],
 }
 
 MIME_TO_EXT: dict[str, str] = {
-    "application/pdf":                                                          "pdf",
-    "image/png":                                                                "png",
-    "image/jpeg":                                                               "jpg",
-    "image/bmp":                                                                "bmp",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-    "application/msword":                                                       "doc",
-    "text/plain":                                                               "txt",
+    "application/pdf":                                                              "pdf",
+    "image/png":                                                                    "png",
+    "image/jpeg":                                                                   "jpg",
+    "image/bmp":                                                                    "bmp",
+    # Word
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":     "docx",
+    "application/msword":                                                           "doc",
+    # Excel
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":           "xlsx",
+    "application/vnd.ms-excel":                                                     "xls",
+    # PowerPoint
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":   "pptx",
+    "application/vnd.ms-powerpoint":                                                "ppt",
+    # Text/data
+    "text/plain":                                                                   "txt",
+    "text/csv":                                                                     "csv",
+    "application/csv":                                                              "csv",
 }
 
 MAX_FILE_SIZE_MB = 50
+
+# Форматы которые конвертируются через iLovePDF API
+ILOVEPDF_FORMATS = {"docx", "doc", "xlsx", "xls", "pptx", "ppt"}
 
 
 def get_extension(filename: str) -> Optional[str]:
@@ -87,8 +130,16 @@ def get_output_filename(original: str, target_format: str) -> str:
         ext = get_extension(original) or "bin"
         out_ext = "pdf" if ext == "pdf" else ext
         return f"{base}_compressed.{out_ext}"
+    if target_format == "png":
+        # Может быть ZIP если многостраничный PDF
+        return f"{base}.png"
     return f"{base}.{target_format}"
 
 
 def is_image_ext(ext: str) -> bool:
     return ext in ("png", "jpg", "jpeg", "bmp")
+
+
+def needs_ilovepdf(file_type: str) -> bool:
+    """Возвращает True если конвертация требует iLovePDF API."""
+    return file_type in ILOVEPDF_FORMATS
