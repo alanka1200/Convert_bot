@@ -16,8 +16,9 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request
 
-from utils import detect_file_type, get_possible_formats, get_output_filename, is_image_ext
+from utils import detect_file_type, get_possible_formats, get_output_filename, is_image_ext, needs_ilovepdf
 from converter import convert, merge_pdfs, merge_images_to_pdf
+from ilovepdf import office_to_pdf, is_ilovepdf_available
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -127,18 +128,21 @@ HELP_TEXT = (
 )
 
 FORMATS_TEXT = (
-    "📋 <b>Поддерживаемые форматы конвертации</b>\n\n"
+    "📋 <b>Поддерживаемые форматы</b>\n\n"
     "📄 <b>PDF</b>\n"
-    "  → Word (DOCX), PNG, TXT, сжатие\n\n"
-    "🖼 <b>PNG / JPG / JPEG / BMP</b>\n"
+    "  → Word, PNG, TXT, сжатие\n\n"
+    "📝 <b>Word (DOCX/DOC)</b>\n"
+    "  → PDF, TXT\n\n"
+    "📊 <b>Excel (XLSX/XLS)</b>\n"
+    "  → PDF, CSV, TXT\n\n"
+    "📑 <b>PowerPoint (PPTX/PPT)</b>\n"
+    "  → PDF, PNG (слайды)\n\n"
+    "🖼 <b>Изображения (PNG/JPG/BMP)</b>\n"
     "  → PDF, другой формат, сжатие\n\n"
-    "📝 <b>DOCX (Word)</b>\n"
-    "  → TXT (извлечь текст)\n\n"
-    "🔤 <b>TXT</b>\n"
+    "🔤 <b>TXT / CSV</b>\n"
     "  → PDF\n\n"
     "📦 <b>ZIP-архив</b>\n"
-    "  Любые файлы → ZIP\n"
-    "  Команда: /zip"
+    "  Любые файлы → ZIP · команда /zip"
 )
 
 
@@ -297,16 +301,26 @@ async def finish_zip(chat_id: int):
         await send(chat_id, "⚠️ Ты не добавил ни одного файла. Отправь файлы и напиши /done")
         return
 
-    await send(chat_id, f"⚙️ Создаю ZIP-архив из {len(files)} файлов... ⏳")
+    await send(chat_id, f"⚙️ Скачиваю и упаковываю {len(files)} файлов... ⏳")
     await typing(chat_id)
 
     try:
+        # Скачиваем все файлы параллельно
+        downloaded = await asyncio.gather(*[dl(f["file_id"]) for f in files])
+
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in files:
-                data = await dl(f["file_id"])
-                # Если одинаковые имена — добавляем номер
-                zf.writestr(f["file_name"], data)
+            seen_names: dict[str, int] = {}
+            for f, data in zip(files, downloaded):
+                name = f["file_name"]
+                # Если имя уже есть — добавляем номер чтобы не перезаписать
+                if name in seen_names:
+                    seen_names[name] += 1
+                    base, ext = os.path.splitext(name)
+                    name = f"{base}_{seen_names[name]}{ext}"
+                else:
+                    seen_names[name] = 0
+                zf.writestr(name, data)
 
         zip_bytes = zip_buf.getvalue()
         await send_file(chat_id, zip_bytes, "archive.zip",
@@ -432,19 +446,31 @@ async def do_convert(chat_id: int, msg_id: int, target: str):
         await send(chat_id, "⚠️ Сессия устарела. Отправь файл заново.")
         return
 
-    label = LABEL.get(target, target.upper())
+    label    = LABEL.get(target, target.upper())
+    file_ext = info["file_ext"]
 
     await edit(chat_id, msg_id,
         f"⚙️ Конвертирую в <b>{label}</b>...\n\nЭто может занять до 30 секунд ⏳")
     await typing(chat_id)
 
     try:
-        raw    = await dl(info["file_id"])
-        result, mime = convert(raw, info["file_ext"], target)
-        out    = get_output_filename(info["file_name"], target)
+        raw = await dl(info["file_id"])
 
+        # Office → PDF через iLovePDF API
+        if target == "pdf" and needs_ilovepdf(file_ext):
+            if not is_ilovepdf_available():
+                await send(chat_id,
+                    "⚠️ Конвертация Office → PDF временно недоступна.\n"
+                    "Попробуй позже или используй другой формат.")
+                return
+            result = await office_to_pdf(raw, info["file_name"])
+            mime   = "application/pdf"
+        else:
+            result, mime = convert(raw, file_ext, target)
+
+        out   = get_output_filename(info["file_name"], target)
         lines = [
-            f"✅ <b>{info['file_ext'].upper()} → {label}</b>",
+            f"✅ <b>{file_ext.upper()} → {label}</b>",
             f"📦 Размер: {sz(len(result))}",
         ]
         if target == "compress":
