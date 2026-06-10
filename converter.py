@@ -266,6 +266,40 @@ def txt_to_pdf(txt_bytes: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────
+# Excel → CSV/TXT
+# ─────────────────────────────────────────────
+def excel_to_csv(excel_bytes: bytes, ext: str) -> bytes:
+    """Конвертирует Excel в CSV (первый лист)."""
+    try:
+        import openpyxl
+        import csv
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
+        ws = wb.active
+        out = io.StringIO()
+        writer = csv.writer(out)
+        for row in ws.iter_rows(values_only=True):
+            writer.writerow([str(c) if c is not None else "" for c in row])
+        return out.getvalue().encode("utf-8")
+    except ImportError:
+        # Fallback через xlrd для .xls
+        try:
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=excel_bytes)
+            ws = wb.sheet_by_index(0)
+            import csv
+            out = io.StringIO()
+            writer = csv.writer(out)
+            for r in range(ws.nrows):
+                writer.writerow([str(ws.cell_value(r, c)) for c in range(ws.ncols)])
+            return out.getvalue().encode("utf-8")
+        except Exception as e2:
+            raise RuntimeError(f"Ошибка конвертации Excel → CSV: {e2}")
+    except Exception as e:
+        logger.error(f"excel_to_csv error: {e}")
+        raise RuntimeError(f"Ошибка конвертации Excel → CSV: {e}")
+
+
+# ─────────────────────────────────────────────
 # Объединение PDF
 # ─────────────────────────────────────────────
 def merge_pdfs(pdf_bytes_list: list[bytes]) -> bytes:
@@ -336,13 +370,25 @@ def convert(
         if target_format == "compress":
             return compress_image(file_bytes, file_ext), f"image/{'jpeg' if file_ext in ('jpg','jpeg') else 'png'}"
 
-    # DOCX → ...
-    if file_ext == "docx":
+    # DOCX/DOC → ...
+    if file_ext in ("docx", "doc"):
         if target_format == "txt":
             return docx_to_txt(file_bytes), "text/plain; charset=utf-8"
 
     # TXT → ...
     if file_ext == "txt":
+        if target_format == "pdf":
+            return txt_to_pdf(file_bytes), "application/pdf"
+
+    # Excel → CSV/TXT
+    if file_ext in ("xlsx", "xls"):
+        if target_format in ("csv", "txt"):
+            return excel_to_csv(file_bytes, file_ext), "text/plain; charset=utf-8"
+
+    # CSV → TXT/PDF
+    if file_ext == "csv":
+        if target_format == "txt":
+            return csv_bytes, "text/plain; charset=utf-8"  # type: ignore
         if target_format == "pdf":
             return txt_to_pdf(file_bytes), "application/pdf"
 
