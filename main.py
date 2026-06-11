@@ -198,6 +198,26 @@ async def handle_update(update: dict):
         photo    = msg.get("photo")
         st       = state.get(chat_id, {})
 
+        # ── Мусорные типы сообщений: стикеры, голосовые, видео, контакты, локация ──
+        if not text and not document and not photo:
+            unsupported = (
+                msg.get("sticker") or
+                msg.get("voice") or
+                msg.get("video") or
+                msg.get("video_note") or
+                msg.get("audio") or
+                msg.get("contact") or
+                msg.get("location") or
+                msg.get("venue") or
+                msg.get("animation") or
+                msg.get("poll")
+            )
+            if unsupported:
+                await send(chat_id,
+                    "📁 Я работаю только с файлами и изображениями.\n\n"
+                    "Отправь документ, PDF, картинку или архив — и я помогу с конвертацией!")
+                return
+
         # ── Режим сбора файлов для ZIP-архива ──
         if st.get("mode") == "zip_collect":
             if text == "/done":
