@@ -14,10 +14,71 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
+# PDF — определение типа (скан или текстовый)
+# ─────────────────────────────────────────────
+def is_scanned_pdf(pdf_bytes: bytes) -> bool:
+    """
+    Определяет, является ли PDF сканом (изображение без текстового слоя).
+    Использует PyMuPDF: проверяет текст, покрытие изображением и GlyphlessFont.
+    """
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total_pages = len(doc)
+        scanned_pages = 0
+
+        for page in doc:
+            text = page.get_text("text").strip()
+
+            # Проверяем GlyphlessFont — признак OCR-слоя поверх скана
+            fonts = page.get_fonts(full=True)
+            has_glyphless = any("GlyphLessFont" in (f[3] or "") for f in fonts)
+
+            # Проверяем покрытие изображением (≥95% страницы)
+            page_area = abs(page.rect)
+            image_covered = False
+            if page_area > 0:
+                for img in page.get_images(full=True):
+                    xref = img[0]
+                    for r in page.get_image_rects(xref):
+                        if abs(r & page.rect) / page_area >= 0.95:
+                            image_covered = True
+                            break
+                    if image_covered:
+                        break
+
+            # Страница считается сканом если:
+            # - нет текста И есть полностью покрывающее изображение
+            # - есть GlyphlessFont (OCR поверх скана — текст есть но он "пустой")
+            if has_glyphless or (image_covered and len(text) < 50):
+                scanned_pages += 1
+
+        doc.close()
+        # Считаем PDF сканом если большинство страниц — сканы
+        return scanned_pages > total_pages / 2
+
+    except Exception as e:
+        logger.warning(f"is_scanned_pdf check failed: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────
 # PDF → DOCX
 # ─────────────────────────────────────────────
 def pdf_to_docx(pdf_bytes: bytes) -> bytes:
-    """Конвертирует PDF в DOCX. Качество зависит от сложности PDF."""
+    """
+    Конвертирует PDF в DOCX.
+    Если PDF — скан, кидает понятную ошибку вместо пустого файла.
+    """
+    # Проверяем тип PDF перед конвертацией
+    if is_scanned_pdf(pdf_bytes):
+        raise RuntimeError(
+            "PDF содержит сканированные страницы (изображения без текста). "
+            "Конвертация в Word невозможна без OCR. "
+            "Попробуй сначала конвертировать PDF → TXT или используй "
+            "онлайн-сервис с поддержкой распознавания текста."
+        )
+
     try:
         from pdf2docx import Converter
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_in:
@@ -36,6 +97,8 @@ def pdf_to_docx(pdf_bytes: bytes) -> bytes:
                 os.remove(tmp_in_path)
             if os.path.exists(tmp_out_path):
                 os.remove(tmp_out_path)
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.error(f"pdf_to_docx error: {e}")
         raise RuntimeError(f"Ошибка конвертации PDF → DOCX: {e}")
@@ -78,19 +141,38 @@ def pdf_to_png(pdf_bytes: bytes) -> bytes:
 # PDF → TXT (извлечение текста)
 # ─────────────────────────────────────────────
 def pdf_to_txt(pdf_bytes: bytes) -> bytes:
-    """Извлекает текст из PDF."""
+    """
+    Извлекает текст из PDF.
+    Если PDF — скан, возвращает понятное сообщение.
+    """
     try:
         import fitz
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         text_parts = []
+        empty_pages = 0
+
         for i, page in enumerate(doc):
             text = page.get_text("text")
             text_parts.append(f"=== Страница {i+1} ===\n{text}\n")
+            if not text.strip():
+                empty_pages += 1
+
         doc.close()
         full_text = "\n".join(text_parts)
-        if not full_text.strip():
-            full_text = "Текст не найден (возможно, PDF содержит только изображения)."
+        total_pages = len(text_parts)
+
+        # Если большинство страниц пустые — это скан
+        if empty_pages > total_pages / 2 or not full_text.strip():
+            raise RuntimeError(
+                "PDF содержит сканированные страницы (изображения без текстового слоя). "
+                "Извлечение текста невозможно без OCR. "
+                "Для распознавания текста используй сервисы: Adobe Acrobat, Google Drive "
+                "(открой PDF → Файл → Открыть с помощью → Google Документы) или онлайн OCR."
+            )
+
         return full_text.encode("utf-8")
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.error(f"pdf_to_txt error: {e}")
         raise RuntimeError(f"Ошибка извлечения текста из PDF: {e}")
@@ -105,10 +187,8 @@ def compress_pdf(pdf_bytes: bytes) -> bytes:
         import pypdf
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         writer = pypdf.PdfWriter()
-        # Сначала добавляем все страницы в writer
         for page in reader.pages:
             writer.add_page(page)
-        # Затем сжимаем контент у страниц, уже принадлежащих writer
         for page in writer.pages:
             page.compress_content_streams()
         output = io.BytesIO()
@@ -146,7 +226,6 @@ def convert_image(image_bytes: bytes, target_format: str) -> bytes:
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(image_bytes))
-        # JPG не поддерживает прозрачность
         if target_format.lower() in ("jpg", "jpeg") and img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
         out = io.BytesIO()
@@ -208,9 +287,6 @@ def txt_to_pdf(txt_bytes: bytes) -> bytes:
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
         from reportlab.lib.units import cm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import urllib.request
 
         text = txt_bytes.decode("utf-8", errors="replace")
         output = io.BytesIO()
@@ -225,20 +301,10 @@ def txt_to_pdf(txt_bytes: bytes) -> bytes:
         )
 
         styles = getSampleStyleSheet()
-
-        # Пробуем использовать системный шрифт для кириллицы
-        font_name = "Helvetica"
-        try:
-            # На Render используем встроенный шрифт (латиница работает всегда)
-            # Для корректной кириллицы можно скачать шрифт, но это усложнит деплой
-            pass
-        except Exception:
-            pass
-
         style = ParagraphStyle(
             "custom",
             parent=styles["Normal"],
-            fontName=font_name,
+            fontName="Helvetica",
             fontSize=11,
             leading=16,
             wordWrap="CJK",
@@ -246,7 +312,6 @@ def txt_to_pdf(txt_bytes: bytes) -> bytes:
 
         story = []
         for line in text.split("\n"):
-            # Экранируем спецсимволы для reportlab
             safe_line = (
                 line.replace("&", "&amp;")
                     .replace("<", "&lt;")
@@ -281,12 +346,11 @@ def excel_to_csv(excel_bytes: bytes, ext: str) -> bytes:
             writer.writerow([str(c) if c is not None else "" for c in row])
         return out.getvalue().encode("utf-8")
     except ImportError:
-        # Fallback через xlrd для .xls
         try:
             import xlrd
+            import csv
             wb = xlrd.open_workbook(file_contents=excel_bytes)
             ws = wb.sheet_by_index(0)
-            import csv
             out = io.StringIO()
             writer = csv.writer(out)
             for r in range(ws.nrows):
@@ -353,7 +417,6 @@ def convert(
             return pdf_to_docx(file_bytes), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         if target_format == "png":
             data = pdf_to_png(file_bytes)
-            # Если ZIP (многостраничный) — zip mime
             mime = "application/zip" if data[:2] == b"PK" else "image/png"
             return data, mime
         if target_format == "txt":
@@ -388,7 +451,8 @@ def convert(
     # CSV → TXT/PDF
     if file_ext == "csv":
         if target_format == "txt":
-            return csv_bytes, "text/plain; charset=utf-8"  # type: ignore
+            # FIX: был баг с неопределённой переменной csv_bytes
+            return file_bytes, "text/plain; charset=utf-8"
         if target_format == "pdf":
             return txt_to_pdf(file_bytes), "application/pdf"
 
